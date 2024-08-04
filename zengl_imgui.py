@@ -14,16 +14,29 @@ class OpenGL:
     GL_UNSIGNED_INT = 0x1405
     GL_SCISSOR_TEST = 0x0c11
 
-    def __init__(self, load):
-        from ctypes import CFUNCTYPE, c_int, c_ssize_t, c_void_p, cast
-        self.glEnable = cast(load('glEnable'), CFUNCTYPE(None, c_int))
-        self.glDisable = cast(load('glDisable'), CFUNCTYPE(None, c_int))
-        self.glScissor = cast(load('glScissor'), CFUNCTYPE(None, c_int, c_int, c_int, c_int))
-        self.glActiveTexture = cast(load('glActiveTexture'), CFUNCTYPE(None, c_int))
-        self.glBindTexture = cast(load('glBindTexture'), CFUNCTYPE(None, c_int, c_int))
-        self.glBindBuffer = cast(load('glBindBuffer'), CFUNCTYPE(None, c_int, c_int))
-        self.glBufferData = cast(load('glBufferData'), CFUNCTYPE(None, c_int, c_ssize_t, c_void_p, c_int))
-        self.glDrawElements = cast(load('glDrawElements'), CFUNCTYPE(None, c_int, c_int, c_int, c_void_p))
+    def __init__(self):
+        if not zengl._extern_gl:
+            from ctypes import CFUNCTYPE, c_int, c_ssize_t, c_void_p, cast
+            load = zengl.default_loader.load_opengl_function
+            self.glEnable = cast(load('glEnable'), CFUNCTYPE(None, c_int))
+            self.glDisable = cast(load('glDisable'), CFUNCTYPE(None, c_int))
+            self.glScissor = cast(load('glScissor'), CFUNCTYPE(None, c_int, c_int, c_int, c_int))
+            self.glActiveTexture = cast(load('glActiveTexture'), CFUNCTYPE(None, c_int))
+            self.glBindTexture = cast(load('glBindTexture'), CFUNCTYPE(None, c_int, c_int))
+            self.glBindBuffer = cast(load('glBindBuffer'), CFUNCTYPE(None, c_int, c_int))
+            self.glBufferData = cast(load('glBufferData'), CFUNCTYPE(None, c_int, c_ssize_t, c_void_p, c_int))
+            self.glDrawElementsInstanced = cast(load('glDrawElementsInstanced'), CFUNCTYPE(None, c_int, c_int, c_int, c_void_p, c_int))
+        else:
+            import _zengl
+            _zengl.gl_symbols
+            self.glEnable = _zengl.gl_symbols.zengl_glEnable
+            self.glDisable = _zengl.gl_symbols.zengl_glDisable
+            self.glScissor = _zengl.gl_symbols.zengl_glScissor
+            self.glActiveTexture = _zengl.gl_symbols.zengl_glActiveTexture
+            self.glBindTexture = _zengl.gl_symbols.zengl_glBindTexture
+            self.glBindBuffer = _zengl.gl_symbols.zengl_glBindBuffer
+            self.glBufferData = _zengl.gl_symbols.zengl_glBufferData
+            self.glDrawElementsInstanced = _zengl.gl_symbols.zengl_glDrawElementsInstanced
 
 
 class ZenGLRenderer:
@@ -38,7 +51,7 @@ class ZenGLRenderer:
         self.atlas = self.ctx.image((width, height), 'rgba8unorm', pixels)
 
         version = '#version 330 core'
-        if self.ctx.info['version'].startswith('OpenGL ES'):
+        if 'WebGL' in self.ctx.info['version'] or 'OpenGL ES' in self.ctx.info['version']:
             version = '#version 300 es\nprecision highp float;'
 
         self.pipeline = self.ctx.pipeline(
@@ -61,7 +74,7 @@ class ZenGLRenderer:
                 }
             ''',
             fragment_shader='''
-                #version 330 core
+                #include "version"
                 uniform sampler2D Texture;
                 in vec2 v_uv;
                 in vec4 v_color;
@@ -98,7 +111,7 @@ class ZenGLRenderer:
             instance_count=0,
         )
 
-        self.gl = OpenGL(zengl.default_loader.load_opengl_function)
+        self.gl = OpenGL()
         self.vtx_buffer = zengl.inspect(self.vertex_buffer)['buffer']
         self.idx_buffer = zengl.inspect(self.index_buffer)['buffer']
         self.io.fonts.texture_id = zengl.inspect(self.atlas)['texture']
@@ -134,7 +147,7 @@ class ZenGLRenderer:
                 x1, y1, x2, y2 = command.clip_rect
                 gl.glScissor(int(x1), int(fb_height - y2), int(x2 - x1), int(y2 - y1))
                 gl.glBindTexture(gl.GL_TEXTURE_2D, command.texture_id)
-                gl.glDrawElements(gl.GL_TRIANGLES, command.elem_count, gl.GL_UNSIGNED_INT, idx_buffer_offset)
+                gl.glDrawElementsInstanced(gl.GL_TRIANGLES, command.elem_count, gl.GL_UNSIGNED_INT, idx_buffer_offset, 1)
                 idx_buffer_offset += command.elem_count * imgui.INDEX_SIZE
         gl.glDisable(gl.GL_SCISSOR_TEST)
 
@@ -147,9 +160,7 @@ class PygameBackend:
             def __init__(self):
                 self._gui_time = None
                 self.custom_key_map = {}
-                try:
-                    imgui.get_io()
-                except:
+                if not imgui.get_current_context():
                     imgui.create_context()
                 self.io = imgui.get_io()
                 self.io.display_size = pygame.display.get_window_size()
