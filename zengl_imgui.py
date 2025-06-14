@@ -17,7 +17,7 @@ class OpenGL:
     def __init__(self):
         if not zengl._extern_gl:
             from ctypes import CFUNCTYPE, c_int, c_ssize_t, c_void_p, cast
-            load = zengl.default_loader.load_opengl_function
+            load = zengl.context().loader.load_opengl_function
             self.glEnable = cast(load('glEnable'), CFUNCTYPE(None, c_int))
             self.glDisable = cast(load('glDisable'), CFUNCTYPE(None, c_int))
             self.glScissor = cast(load('glScissor'), CFUNCTYPE(None, c_int, c_int, c_int, c_int))
