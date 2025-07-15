@@ -189,9 +189,11 @@ class PygameBackend:
         sys.modules["imgui_bundle.python_backends.opengl_backend_fixed"] = _fake_mod
 
         import pygame
-        from imgui_bundle.python_backends.python_backends_disabled.pygame_backend import PygameRenderer
-        # once next imgui_bundle release is out, replace the above import with the below:
-        # from imgui_bundle.python_backends.pygame_backend import PygameRenderer
+        try:
+            from imgui_bundle.python_backends.python_backends_disabled.pygame_backend import PygameRenderer
+        except ImportError:
+            # this will be the correct import path once the next imgui_bundle release is out
+            from imgui_bundle.python_backends.pygame_backend import PygameRenderer
 
         class PygameInputHandler(PygameRenderer):
             def __init__(self):
