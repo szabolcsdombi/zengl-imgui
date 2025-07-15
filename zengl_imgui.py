@@ -180,6 +180,7 @@ class PygameBackend:
         # monkey patch fix for broken OpenGL backend import within imgui_bundle
         # we only care about the input/event handling from PygameRenderer
         # so we can safely just replace it with a noop
+        # (can remove once next imgui_bundle release is out)
         import sys, types
         _fake_mod = types.ModuleType("imgui_bundle.python_backends.opengl_backend_fixed")
         class FixedPipelineRenderer:
@@ -189,6 +190,8 @@ class PygameBackend:
 
         import pygame
         from imgui_bundle.python_backends.python_backends_disabled.pygame_backend import PygameRenderer
+        # once next imgui_bundle release is out, replace the above import with the below:
+        # from imgui_bundle.python_backends.pygame_backend import PygameRenderer
 
         class PygameInputHandler(PygameRenderer):
             def __init__(self):
@@ -199,6 +202,19 @@ class PygameBackend:
                 self.io = imgui.get_io()
                 self.io.display_size = pygame.display.get_window_size()
                 self._map_keys()
+
+                # patch a fix for imgui_bundle key mapping (can remove once next imgui_bundle release is out)
+                self.key_map.pop(pygame.K_SPACE, None)
+                self.key_map[pygame.K_TAB] = imgui.Key.tab
+
+            def _update_textures(self):
+                # replace PygameRenderer's texture refresh on-resize method with a noop
+                pass
+
+            def refresh_font_texture(self):
+                # current imgui_bundle version of `_update_textures`
+                # (can remove once next imgui_bundle release is out)
+                pass
 
         self.input_handler = PygameInputHandler()
         self.renderer = ZenGLRenderer()
