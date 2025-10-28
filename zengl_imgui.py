@@ -1,7 +1,8 @@
 import struct
+from ctypes import c_byte
 
-import imgui
 import zengl
+from imgui_bundle import imgui
 
 
 class OpenGL:
@@ -47,8 +48,13 @@ class ZenGLRenderer:
         self.vertex_buffer = self.ctx.buffer(size=1)
         self.index_buffer = self.ctx.buffer(size=1, index=True)
 
-        width, height, pixels = self.io.fonts.get_tex_data_as_rgba32()
+        self.io.fonts.add_font_default()
+        tex_data = self.io.fonts.tex_data
+        width, height, pixels = tex_data.width, tex_data.height, tex_data.get_pixels_array()
         self.atlas = self.ctx.image((width, height), 'rgba8unorm', pixels)
+        tex_data.set_tex_id(zengl.inspect(self.atlas)['texture'])
+        tex_data.set_status(imgui.ImTextureStatus.ok)
+        self.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
 
         version = '#version 330 core'
         if 'WebGL' in self.ctx.info['version'] or 'OpenGL ES' in self.ctx.info['version']:
@@ -114,16 +120,29 @@ class ZenGLRenderer:
         self.gl = OpenGL()
         self.vtx_buffer = zengl.inspect(self.vertex_buffer)['buffer']
         self.idx_buffer = zengl.inspect(self.index_buffer)['buffer']
-        self.io.fonts.texture_id = zengl.inspect(self.atlas)['texture']
-        self.io.fonts.clear_tex_data()
+        self.ctx.end_frame(flush=False)
 
-    def render(self, draw_data=None):
+    def _update_font_texture(self):
+        tex_data = self.io.fonts.tex_data
+        pixels = self.io.fonts.tex_data.get_pixels_array()
+        self.atlas.write(pixels)
+        tex_data.set_tex_id(zengl.inspect(self.atlas)['texture'])
+        tex_data.set_status(imgui.ImTextureStatus.ok)
+
+    def render(self, draw_data: imgui.ImDrawData | None = None):
+        self.ctx.new_frame(clear=False)
+
+        if self.io.fonts.tex_data.status == imgui.ImTextureStatus.want_updates:
+            # the internal imgui_bundle atlas changes dynamically
+            # so we need to update it or we end up with missing glyphs
+            self._update_font_texture()
+
         if draw_data is None:
             draw_data = imgui.get_draw_data()
 
         display_width, display_height = self.io.display_size
-        fb_width = int(display_width * self.io.display_fb_scale[0])
-        fb_height = int(display_height * self.io.display_fb_scale[1])
+        fb_width = int(display_width * self.io.display_framebuffer_scale[0])
+        fb_height = int(display_height * self.io.display_framebuffer_scale[1])
 
         if draw_data is None or fb_width == 0 or fb_height == 0:
             return
@@ -135,27 +154,47 @@ class ZenGLRenderer:
         gl = self.gl
         gl.glEnable(gl.GL_SCISSOR_TEST)
         gl.glActiveTexture(gl.GL_TEXTURE0)
-        for commands in draw_data.commands_lists:
+        for commands in draw_data.cmd_lists:
             idx_buffer_offset = 0
-            vtx_size = commands.vtx_buffer_size * imgui.VERTEX_SIZE
-            idx_size = commands.idx_buffer_size * imgui.INDEX_SIZE
+            vtx_size = commands.vtx_buffer.size() * imgui.VERTEX_SIZE
+            idx_size = commands.idx_buffer.size() * imgui.INDEX_SIZE
+            vtx_buffer_data = (c_byte * vtx_size).from_address(commands.vtx_buffer.data_address())
+            idx_buffer_data = (c_byte * idx_size).from_address(commands.idx_buffer.data_address())
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vtx_buffer)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, vtx_size, commands.vtx_buffer_data, gl.GL_STREAM_DRAW)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, vtx_size, vtx_buffer_data, gl.GL_STREAM_DRAW)
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.idx_buffer)
-            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, idx_size, commands.idx_buffer_data, gl.GL_STREAM_DRAW)
-            for command in commands.commands:
+            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, idx_size, idx_buffer_data, gl.GL_STREAM_DRAW)
+            for command in commands.cmd_buffer:
                 x1, y1, x2, y2 = command.clip_rect
                 gl.glScissor(int(x1), int(fb_height - y2), int(x2 - x1), int(y2 - y1))
-                gl.glBindTexture(gl.GL_TEXTURE_2D, command.texture_id)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, command.get_tex_id())
                 gl.glDrawElementsInstanced(gl.GL_TRIANGLES, command.elem_count, gl.GL_UNSIGNED_INT, idx_buffer_offset, 1)
                 idx_buffer_offset += command.elem_count * imgui.INDEX_SIZE
         gl.glDisable(gl.GL_SCISSOR_TEST)
 
+        self.ctx.end_frame()
+
 
 class PygameBackend:
     def __init__(self):
+        # monkey patch fix for broken OpenGL backend import within imgui_bundle
+        # we only care about the input/event handling from PygameRenderer
+        # so we can safely just replace it with a noop
+        # (can remove once next imgui_bundle release is out)
+        import sys, types
+        _fake_mod = types.ModuleType("imgui_bundle.python_backends.opengl_backend_fixed")
+        class FixedPipelineRenderer:
+            pass
+        _fake_mod.FixedPipelineRenderer = FixedPipelineRenderer
+        sys.modules["imgui_bundle.python_backends.opengl_backend_fixed"] = _fake_mod
+
         import pygame
-        from imgui.integrations.pygame import PygameRenderer
+        try:
+            from imgui_bundle.python_backends.python_backends_disabled.pygame_backend import PygameRenderer
+        except ImportError:
+            # this will be the correct import path once the next imgui_bundle release is out
+            from imgui_bundle.python_backends.pygame_backend import PygameRenderer
+
         class PygameInputHandler(PygameRenderer):
             def __init__(self):
                 self._gui_time = None
@@ -166,11 +205,24 @@ class PygameBackend:
                 self.io.display_size = pygame.display.get_window_size()
                 self._map_keys()
 
+                # patch a fix for imgui_bundle key mapping (can remove once next imgui_bundle release is out)
+                self.key_map.pop(pygame.K_SPACE, None)
+                self.key_map[pygame.K_TAB] = imgui.Key.tab
+
+            def _update_textures(self):
+                # replace PygameRenderer's texture refresh on-resize method with a noop
+                pass
+
+            def refresh_font_texture(self):
+                # current imgui_bundle version of `_update_textures`
+                # (can remove once next imgui_bundle release is out)
+                pass
+
         self.input_handler = PygameInputHandler()
         self.renderer = ZenGLRenderer()
 
-    def render(self):
-        return self.renderer.render()
+    def render(self, draw_data: imgui.ImDrawData | None = None):
+        return self.renderer.render(draw_data)
 
     def process_event(self, event):
         return self.input_handler.process_event(event)
